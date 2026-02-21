@@ -1,0 +1,105 @@
+Topics to Study
+## DL Fundamentals
+
+- [ ] Neurons, layers, forward pass
+- [ ] Non-linearity (why, which ones)
+- [ ] Loss functions (MSE, cross-entropy)
+- [ ] Backpropagation and chain rule
+- [ ] Optimizers (SGD, momentum, Adam)
+- [ ] Regularization (dropout, weight decay)
+- [ ] Batch norm, layer norm
+- [ ] Residual connections
+
+## Transformers
+
+- [ ] Attention mechanism (Q/K/V)
+- [ ] Multi-head attention
+- [ ] Positional encoding
+- [ ] Transformer block structure
+- [ ] Complexity of attention (O(n²))
+
+## Diffusion Models
+
+- [ ] Forward process (adding noise)
+- [ ] Reverse process (denoising)
+- [ ] DDPM vs DDIM vs EDM
+- [ ] U-Net architecture
+- [ ] Classifier-free guidance
+- [ ] How DIAMOND uses diffusion
+
+## World Models + RL
+
+- [ ] What is a world model
+- [ ] DIAMOND architecture
+- [ ] GAIA-1/2 architecture
+- [ ] VQ-VAE tokenization
+- [ ] Training agents inside world models
+- [ ] PPO basics
+
+## Training Mechanics
+
+- [ ] Training loop structure
+- [ ] Learning rate schedules
+- [ ] Gradient clipping
+- [ ] Mixed precision (FP16, BF16)
+- [ ] Distributed training basics
+
+## Inference Optimization
+
+- [ ] Quantization (INT8, FP16)
+- [ ] Distillation
+- [ ] Profiling bottlenecks
+
+## CUDA
+
+- [ ] Memory hierarchy (global, shared, registers)
+- [ ] Thread/block/grid model
+- [ ] Warps and divergence
+- [ ] Memory coalescing
+- [ ] Roofline model
+- [ ] Flash Attention (why it's fast)
+- [ ] Triton basics
+
+## Deliverables (code to write)
+
+ - [ ] Sigmoid, ReLU, softmax from scratch (numpy)
+ - [ ] Cross-entropy loss from scratch
+ - [ ] MLP forward pass from scratch (numpy)
+ - [ ] Backprop through simple network (numpy)
+ - [ ] Single-head attention (PyTorch)
+ - [ ] Multi-head attention (PyTorch)
+ - [ ] Transformer block (PyTorch)
+ - [ ] Training loop (PyTorch)
+ - [ ] Simple diffusion sampling loop
+ - [ ] CUDA vector add
+ - [ ] CUDA matmul (naive)
+ - [ ] CUDA softmax
+ - [ ] Quantization example (torch.quantization)
+
+
+## Fluency Drills (explain in <30 sec)
+
+- [ ] Why non-linearity?
+- [ ] Why ReLU over sigmoid?
+- [ ] What's backprop?
+- [ ] Why batch norm?
+- [ ] Why layer norm in transformers?
+- [ ] Why residual connections?
+- [ ] Why dropout?
+- [ ] Why Adam over SGD?
+- [ ] Why attention over RNN?
+- [ ] What's softmax?
+- [ ] What's cross-entropy?
+- [ ] What's the complexity of attention?
+- [ ] What's Flash Attention and why is it fast?
+- [ ] What's a world model?
+- [ ] How does diffusion work?
+- [ ] What's VQ-VAE?
+- [ ] What's quantization?
+- [ ] What's distillation?
+- [ ] Why GPU over CPU for ML?
+- [ ] What's memory bound vs compute bound?
+
+Papers to Read
+- [ ] DIAMOND (read carefully, Adam co-wrote it)
+- [ ] GAIA-1 (skim, Anthony wrote it)
