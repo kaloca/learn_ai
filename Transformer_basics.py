@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import torch
 from torch import nn
@@ -11,33 +12,16 @@ def single_head_attention(Q, K, V):
     # X = (2000, 64)
     # Q, K, V = (64, 64)
     score = torch.softmax(
-        (Q @ K.T) / torch.sqrt(torch.tensor(K.shape[-1], dtype=torch.float32)), dim=-1
+        (Q @ K.T)
+        / torch.sqrt(torch.tensor(K.shape[-1], dtype=torch.float32, device=K.device)),
+        dim=-1,
     )
 
     return score @ V
 
 
-def multi_head_attention(X, d_total, n_heads, W_O):
-    # d_total = embedding dim
-    head_dim = d_total // n_heads
-    W_Qs = [torch.randn(d_total, head_dim) for _ in range(n_heads)]
-    W_Ks = [torch.randn(d_total, head_dim) for _ in range(n_heads)]
-    W_Vs = [torch.randn(d_total, head_dim) for _ in range(n_heads)]
-
-    final = []
-    for i in range(n_heads):
-        Q = X @ W_Qs[i]
-        K = X @ W_Ks[i]
-        V = X @ W_Vs[i]
-
-        attn = single_head_attention(Q, K, V)
-        final.append(attn)
-
-    return torch.cat(final, dim=-1) @ W_O
-
-
 class MyTransformer(nn.Module):
-    def __init__(self, T=256, d_total=256, n_heads=8):
+    def __init__(self, T=256, d_total=256, n_heads=8, dropout=0.1):
         super().__init__()
         self.T = T
         self.d_total = d_total
@@ -55,6 +39,13 @@ class MyTransformer(nn.Module):
         self.Lnorm2 = nn.LayerNorm(d_total)
         self.gelu = nn.GELU()
 
+        self.attn_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
+
+        self.register_buffer(
+            "causal_mask", torch.tril(torch.ones(self.T, self.T, dtype=torch.bool))
+        )
+
     def old_multi_head_attention(self, X):
         T = X.shape[0]
         Q = self.W_Q(X).view(T, self.n_heads, self.head_dim)
@@ -71,26 +62,49 @@ class MyTransformer(nn.Module):
         B, T, _ = X.shape
         Q = (
             self.W_Q(X).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        )  # (B, n_heads, T, head_dim)
-        K = self.W_K(X).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        V = self.W_V(X).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        )  # (B,H,T,D)
+        K = (
+            self.W_K(X).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        )  # (B,H,T,D)
+        V = (
+            self.W_V(X).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        )  # (B,H,T,D)
 
-        scores = torch.softmax(Q @ K.transpose(-2, -1) / (self.head_dim**0.5), dim=-1)
-        out = scores @ V  # (B, n_heads, T, head_dim)
-        out = out.transpose(1, 2).reshape(B, T, self.d_total)
-        return self.W_O(out)
+        scores = Q @ K.transpose(-2, -1)  # (B,H,T,T)
+        scores = scores / (self.head_dim**0.5)
+
+        mask = self.causal_mask[:T, :T]  # (T,T)
+        scores = scores.masked_fill(~mask[None, None, :, :], -float("inf"))
+
+        probs = torch.softmax(scores, dim=-1)  # (B,H,T,T)
+        probs = self.attn_dropout(probs)
+
+        out = probs @ V  # (B,H,T,D)
+
+        out = out.transpose(1, 2).reshape(B, T, self.d_total)  # (B,T,C)
+        out = self.W_O(out)
+        out = self.resid_dropout(out)
+        return out
 
     def forward(self, x):
-        x = self.Lnorm1(x)
-        x = x + self.multi_head_attention(x)
-        x = self.Lnorm2(x)
-        x = x + self.L2(self.gelu(self.L1(x)))
+        attn_in = self.Lnorm1(x)
+        attn_out = self.multi_head_attention(attn_in)
+        x = x + attn_out
+
+        mlp_in = self.Lnorm2(x)
+        h = self.L1(mlp_in)
+        h = self.gelu(h)
+        mlp_out = self.L2(h)
+        mlp_out = self.resid_dropout(mlp_out)
+        x = x + mlp_out
 
         return x
 
 
 class MyGPT(nn.Module):
-    def __init__(self, vocab_size=2000, d_total=256, n_blocks=6, T=2000):
+    def __init__(
+        self, vocab_size=2000, d_total=256, n_blocks=6, T=2000, n_heads=8, dropout=0.1
+    ):
         super().__init__()
 
         self.T = T
@@ -101,36 +115,44 @@ class MyGPT(nn.Module):
         self.token_emb = nn.Embedding(vocab_size, d_total)
         self.pos_emb = nn.Embedding(T, d_total)
 
+        self.emb_dropout = nn.Dropout(dropout)
+
         self.transformer_blocks = nn.ModuleList(
-            [MyTransformer() for i in range(n_blocks)]
+            [
+                MyTransformer(T=T, d_total=d_total, n_heads=n_heads)
+                for _ in range(n_blocks)
+            ]
         )
         self.lnorm = nn.LayerNorm(d_total)
         self.linear = nn.Linear(d_total, vocab_size)
 
     def forward(self, idx):
+        T = idx.shape[1]
         tok = self.token_emb(idx)
-        pos = self.pos_emb(torch.arange(self.T).to("cuda")).unsqueeze(0)
-        x = tok + pos
+        pos = self.pos_emb(torch.arange(T, device=idx.device)).unsqueeze(0)
+        x = self.emb_dropout(tok + pos)
 
-        for i in range(self.n_blocks):
-            x = self.transformer_blocks[i].forward(x)
+        for block in self.transformer_blocks:
+            x = block(x)
 
         x = self.lnorm(x)
         x = self.linear(x)
         return x
 
-    def generate(self, prompt, max_new_tokens=256):
-        # output = []
-        prompt_tensor = torch.tensor([0] * (self.T - len(prompt)) + prompt).to("cuda")
+    @torch.no_grad()
+    def generate(self, prompt, max_new_tokens=256, temperature=1.0, top_k=None):
+        device = next(self.parameters()).device
+        prompt_tensor = torch.tensor(prompt, device=device)
         for i in range(max_new_tokens):
-            fwd = self.forward(prompt_tensor.unsqueeze(0)).squeeze(0)
-            last_c = fwd[-1].argmax()
-
-            prompt_tensor = torch.cat(
-                [prompt_tensor[1:], torch.tensor([last_c]).to("cuda")]
-            )
-            # print(last_c)
-        return prompt_tensor[self.T - max_new_tokens :]
+            inp = prompt_tensor[-self.T :].unsqueeze(0)
+            logits = self.forward(inp).squeeze(0)[-1] / temperature
+            if top_k is not None:
+                v, _ = torch.topk(logits, top_k)
+                logits[logits < v[-1]] = float("-inf")
+            probs = torch.softmax(logits, dim=-1)
+            last_c = torch.multinomial(probs, num_samples=1)
+            prompt_tensor = torch.cat([prompt_tensor, last_c])
+        return prompt_tensor[-max_new_tokens:]
 
 
 B = 32
@@ -173,8 +195,9 @@ class TrainGPT:
             loss.backward()
             self.optimizer.step()
 
-    def train(self, n_steps):
-        for i in tqdm(range(n_steps)):
+    def train(self):
+        self.model.train()
+        for i in tqdm(range(self.n_steps)):
             ix = torch.randint(0, len(self.encoded_text) - self.T, (B,))
             input = torch.stack(
                 [self.encoded_text[i : i + self.T] for i in ix]
@@ -187,7 +210,9 @@ class TrainGPT:
             loss = F.cross_entropy(logits.view(-1, self.vocab_size), target.view(-1))
             self.optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
+            self.scheduler.step()
 
             if i % 5000 == 0:
                 tqdm.write(f"step {i}, loss: {loss.item():.4f}")
@@ -197,15 +222,29 @@ class TrainGPT:
                     )
                 )
 
-    def init_model(self, T=1024):
+    def init_model(self, T=1024, n_steps=50000, warmup_steps=500):
         self.T = T
+        self.n_steps = n_steps
         self.model = MyGPT(T=T, vocab_size=self.vocab_size).to("cuda")
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
 
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return step / warmup_steps
+            progress = (step - warmup_steps) / (n_steps - warmup_steps)
+            return 0.5 * (1 + math.cos(math.pi * progress))
+
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
+
     def prompt(self, prompt):
+        was_training = self.model.training
+        self.model.eval()
         encoded_prompt = [self.vocab[c] for c in prompt]
         generation = self.model.generate(encoded_prompt)
         decoded_prompt = "".join([self.inv_vocab[k.item()] for k in generation])
+
+        if was_training:
+            self.model.train()
 
         return decoded_prompt
 
@@ -216,15 +255,17 @@ class TrainGPT:
         self.model.load_state_dict(torch.load(path))
 
 
-gpt = TrainGPT()
+if __name__ == "__main__":
+    gpt = TrainGPT()
 
-gpt.parse_book("foundation.txt")
-gpt.build_vocab()
-gpt.tokenize_book()
-gpt.init_model(T=256)
-gpt.train(n_steps=50000)
-gpt.save()
-response = gpt.prompt(
-    "testing this shit out. my name is gabriel. i am from. i wanted to know what happens if someone from"
-)
-print(response)
+    gpt.parse_book("foundation.txt")
+    gpt.build_vocab()
+    gpt.tokenize_book()
+    gpt.init_model(T=256, n_steps=50000)
+    gpt.train()
+    gpt.save()
+
+    response = gpt.prompt(
+        "testing this shit out. my name is gabriel. i am from. i wanted to know what happens if someone from"
+    )
+    print(response)
