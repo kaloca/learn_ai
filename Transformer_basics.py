@@ -55,7 +55,7 @@ class MyTransformer(nn.Module):
         self.Lnorm2 = nn.LayerNorm(d_total)
         self.gelu = nn.GELU()
 
-    def multi_head_attention(self, X):
+    def old_multi_head_attention(self, X):
         T = X.shape[0]
         Q = self.W_Q(X).view(T, self.n_heads, self.head_dim)
         K = self.W_K(X).view(T, self.n_heads, self.head_dim)
@@ -65,6 +65,20 @@ class MyTransformer(nn.Module):
             attn = single_head_attention(Q[:, i, :], K[:, i, :], V[:, i, :])
             final.append(attn)
         return self.W_O(torch.cat(final, dim=-1))
+
+    # fast
+    def multi_head_attention(self, X):
+        B, T, _ = X.shape
+        Q = (
+            self.W_Q(X).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        )  # (B, n_heads, T, head_dim)
+        K = self.W_K(X).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        V = self.W_V(X).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+
+        scores = torch.softmax(Q @ K.transpose(-2, -1) / (self.head_dim**0.5), dim=-1)
+        out = scores @ V  # (B, n_heads, T, head_dim)
+        out = out.transpose(1, 2).reshape(B, T, self.d_total)
+        return self.W_O(out)
 
     def forward(self, x):
         x = self.Lnorm1(x)
@@ -95,7 +109,7 @@ class MyGPT(nn.Module):
 
     def forward(self, idx):
         tok = self.token_emb(idx)
-        pos = self.pos_emb(torch.arange(self.T).to("cuda"))
+        pos = self.pos_emb(torch.arange(self.T).to("cuda")).unsqueeze(0)
         x = tok + pos
 
         for i in range(self.n_blocks):
@@ -109,7 +123,7 @@ class MyGPT(nn.Module):
         # output = []
         prompt_tensor = torch.tensor([0] * (self.T - len(prompt)) + prompt).to("cuda")
         for i in range(max_new_tokens):
-            fwd = self.forward(prompt_tensor)
+            fwd = self.forward(prompt_tensor.unsqueeze(0)).squeeze(0)
             last_c = fwd[-1].argmax()
 
             prompt_tensor = torch.cat(
@@ -117,6 +131,9 @@ class MyGPT(nn.Module):
             )
             # print(last_c)
         return prompt_tensor[self.T - max_new_tokens :]
+
+
+B = 32
 
 
 class TrainGPT:
@@ -137,15 +154,17 @@ class TrainGPT:
         self.inv_vocab = {v: k for k, v in self.vocab.items()}
 
     def tokenize_book(self):
-        self.encoded_text = [self.vocab[c] for c in self.text]
+        self.encoded_text = torch.tensor(
+            [self.vocab[c] for c in self.text], dtype=torch.long
+        ).to("cuda")
 
-    def train(self, n_steps):
+    def train_old(self, n_steps):
         for i in tqdm(range(n_steps)):
             i = torch.randint(0, len(self.encoded_text) - self.T, (1,)).item()
             chunk = self.encoded_text[i : i + self.T + 1]
 
-            input = torch.tensor(chunk[:-1]).to("cuda")
-            target = torch.tensor(chunk[1:]).to("cuda")
+            input = chunk[:-1]
+            target = chunk[1:]
 
             logits = self.model.forward(input)
 
@@ -154,10 +173,34 @@ class TrainGPT:
             loss.backward()
             self.optimizer.step()
 
+    def train(self, n_steps):
+        for i in tqdm(range(n_steps)):
+            ix = torch.randint(0, len(self.encoded_text) - self.T, (B,))
+            input = torch.stack(
+                [self.encoded_text[i : i + self.T] for i in ix]
+            )  # (B, T)
+            target = torch.stack(
+                [self.encoded_text[i + 1 : i + self.T + 1] for i in ix]
+            )  # (B, T)
+
+            logits = self.model.forward(input)
+            loss = F.cross_entropy(logits.view(-1, self.vocab_size), target.view(-1))
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+            if i % 5000 == 0:
+                tqdm.write(f"step {i}, loss: {loss.item():.4f}")
+                tqdm.write(
+                    self.prompt(
+                        "testing this shit out. my name is gabriel. i am from. i wanted to know what happens if someone from"
+                    )
+                )
+
     def init_model(self, T=1024):
         self.T = T
         self.model = MyGPT(T=T, vocab_size=self.vocab_size).to("cuda")
-        self.optimizer = torch.optim.Adam(self.model.parameters())
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
 
     def prompt(self, prompt):
         encoded_prompt = [self.vocab[c] for c in prompt]
@@ -166,6 +209,12 @@ class TrainGPT:
 
         return decoded_prompt
 
+    def save(self, path="model.pt"):
+        torch.save(self.model.state_dict(), path)
+
+    def load(self, path="model.pt"):
+        self.model.load_state_dict(torch.load(path))
+
 
 gpt = TrainGPT()
 
@@ -173,7 +222,8 @@ gpt.parse_book("foundation.txt")
 gpt.build_vocab()
 gpt.tokenize_book()
 gpt.init_model(T=256)
-gpt.train(n_steps=10000)
+gpt.train(n_steps=50000)
+gpt.save()
 response = gpt.prompt(
     "testing this shit out. my name is gabriel. i am from. i wanted to know what happens if someone from"
 )
