@@ -159,7 +159,9 @@ B = 32
 
 
 class TrainGPT:
-    def __init__(self):
+    def __init__(
+        self,
+    ):
         self.vocab = {}
 
     def parse_book(self, path):
@@ -214,7 +216,7 @@ class TrainGPT:
             self.optimizer.step()
             self.scheduler.step()
 
-            if i % 5000 == 0:
+            if i % 5 == 0:
                 tqdm.write(f"step {i}, loss: {loss.item():.4f}")
                 tqdm.write(
                     self.prompt(
@@ -222,10 +224,22 @@ class TrainGPT:
                     )
                 )
 
-    def init_model(self, T=1024, n_steps=50000, warmup_steps=500):
+    def init_model(
+        self,
+        T=1024,
+        n_steps=50000,
+        warmup_steps=500,
+        d_total=256,
+        n_blocks=6,
+    ):
         self.T = T
         self.n_steps = n_steps
-        self.model = MyGPT(T=T, vocab_size=self.vocab_size).to("cuda")
+        self.model = MyGPT(
+            T=T,
+            vocab_size=self.vocab_size,
+            n_blocks=n_blocks,
+            d_total=d_total,
+        ).to("cuda")
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
 
         def lr_lambda(step):
@@ -258,10 +272,10 @@ class TrainGPT:
 if __name__ == "__main__":
     gpt = TrainGPT()
 
-    gpt.parse_book("foundation.txt")
+    gpt.parse_book("lotr.txt")
     gpt.build_vocab()
     gpt.tokenize_book()
-    gpt.init_model(T=256, n_steps=50000)
+    gpt.init_model(T=256, d_total=256, n_blocks=6, n_steps=1000000)
     gpt.train()
     gpt.save()
 
