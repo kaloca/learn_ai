@@ -1,4 +1,5 @@
 .vscode
 interviewers.txt
 models/
-out
+out*
+noise_slider.py
